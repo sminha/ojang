@@ -114,4 +114,84 @@ app.post('/api/logout', async (req, res) => {
   }
 })
 
+app.post("/api/add-purchase", async (req, res) => {
+  const { supplierName, purchaseDate, products } = req.body;
+
+  if (!supplierName || !purchaseDate || !products || products.length === 0) {
+    return res.status(400).json({ message: "입력된 데이터가 유효하지 않습니다." });
+  }
+
+  const connection = await db.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; 
+
+    if (!token) {
+      return res.status(401).json({ message: '토큰이 제공되지 않았습니다.' });
+    }
+
+    const decoded = jwt.verify(token, process.env.SECRET_KEY); 
+    const userId = decoded.id;
+
+    const [supplier] = await connection.query(
+      "SELECT id FROM suppliers WHERE supplier_name = ?",
+      [supplierName]
+    );
+
+    let supplierId;
+    if (supplier.length === 0) {
+      const [result] = await connection.query(
+        "INSERT INTO suppliers (supplier_name) VALUES (?)",
+        [supplierName]
+      );
+      supplierId = result.insertId;
+    } else {
+      supplierId = supplier[0].id;
+    }
+
+    const [purchase] = await connection.query(
+      "INSERT INTO purchases (user_id, supplier_id, purchase_date) VALUES (?, ?, ?)",
+      [userId, supplierId, purchaseDate]
+    );
+    const purchaseId = purchase.insertId;
+
+    for (const product of products) {
+      const { productName, productPrice, quantity, reservedQuantity } = product;
+
+      const [oldProducts] = await connection.query(
+        "SELECT id FROM products WHERE product_name = ? AND supplier_id = ?",
+        [productName, supplierId]
+      );
+
+      let productId;
+      if (oldProducts.length === 0) {
+        const [newProduct] = await connection.query(
+          "INSERT INTO products (supplier_id, product_name, product_price) VALUES (?, ?, ?)",
+          [supplierId, productName, productPrice]
+        );
+        productId = newProduct.insertId;
+      } else {
+        productId = oldProducts[0].id;
+      }
+
+      await connection.query(
+        "INSERT INTO purchases_products (purchase_id, product_id, quantity, reserved_quantity) VALUES (?, ?, ?, ?)",
+        [purchaseId, productId, quantity, reservedQuantity]
+      );
+    }
+
+    await connection.commit();
+
+    res.status(201).json({ message: "사입 내역이 성공적으로 저장되었습니다." });
+    } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "사입 내역 저장 중 오류가 발생했습니다." });
+    } finally {
+    connection.release();
+    }
+});
+
 app.listen(port, () => console.log(`Server is running on port ${port}`))
